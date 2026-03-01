@@ -90,11 +90,14 @@ class EventTransport:
         backoff = INITIAL_BACKOFF_SECONDS
         for attempt in range(MAX_RETRIES + 1):
             try:
+                # endpoint_url may already include stage path (/v1),
+                # so strip trailing slash and append /ingest directly.
+                base = self.endpoint_url.rstrip("/")
                 response = httpx.post(
-                    f"{self.endpoint_url}/v1/ingest",
+                    f"{base}/ingest",
                     json={"events": batch},
                     headers={
-                        "Authorization": f"Bearer {self.api_key}",
+                        "x-api-key": self.api_key,
                         "Content-Type": "application/json",
                     },
                     timeout=10.0,
