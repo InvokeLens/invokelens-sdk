@@ -210,6 +210,128 @@ class TestQueueFull:
         assert "queue full" in caplog.text.lower()
 
 
+class TestQuotaExceeded:
+    """Tests for 429 quota exceeded handling."""
+
+    @patch("httpx.post")
+    def test_429_does_not_retry(self, mock_post):
+        """429 should NOT retry (quota exceeded is not transient)."""
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {
+            "X-RateLimit-Limit": "10000",
+            "X-RateLimit-Remaining": "0",
+        }
+        mock_response.json.return_value = {
+            "error": "Monthly event quota exceeded",
+            "used": 10000,
+            "limit": 10000,
+        }
+        mock_post.return_value = mock_response
+
+        t = _make_transport()
+        t._flush_http(["event1"])
+
+        assert mock_post.call_count == 1  # No retries
+
+    @patch("httpx.post")
+    def test_429_sets_quota_exceeded_flag(self, mock_post):
+        """After 429, quota_exceeded property should be True."""
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {
+            "X-RateLimit-Limit": "10000",
+            "X-RateLimit-Remaining": "0",
+        }
+        mock_response.json.return_value = {
+            "error": "Monthly event quota exceeded",
+            "used": 10000,
+            "limit": 10000,
+        }
+        mock_post.return_value = mock_response
+
+        t = _make_transport()
+        assert t.quota_exceeded is False
+
+        t._flush_http(["event1"])
+        assert t.quota_exceeded is True
+
+    @patch("httpx.post")
+    def test_429_logs_actionable_error(self, mock_post, caplog):
+        """429 should log an ERROR with usage info and upgrade link."""
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {
+            "X-RateLimit-Limit": "10000",
+            "X-RateLimit-Remaining": "0",
+        }
+        mock_response.json.return_value = {
+            "error": "Monthly event quota exceeded",
+            "used": 10000,
+            "limit": 10000,
+        }
+        mock_post.return_value = mock_response
+
+        t = _make_transport()
+        with caplog.at_level(logging.ERROR, logger="invokelens_sdk.transport"):
+            t._flush_http(["event1", "event2", "event3"])
+
+        assert "quota exceeded" in caplog.text.lower()
+        assert "10000" in caplog.text
+        assert "3 event(s)" in caplog.text
+        assert "invokelens.com/settings/billing" in caplog.text
+
+    @patch("httpx.post")
+    def test_send_drops_after_quota_exceeded(self, mock_post):
+        """After quota exceeded, send() should silently drop events."""
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {"X-RateLimit-Limit": "10000", "X-RateLimit-Remaining": "0"}
+        mock_response.json.return_value = {"used": 10000, "limit": 10000}
+        mock_post.return_value = mock_response
+
+        t = _make_transport()
+        t._flush_http(["event1"])
+        assert t.quota_exceeded is True
+
+        # Now send() should not queue
+        mock_event = MagicMock()
+        mock_event.model_dump_json.return_value = '{"test": true}'
+        t.send(mock_event)
+
+        # Queue should still be empty (event was dropped)
+        assert t._queue.empty()
+
+    @patch("httpx.post")
+    def test_success_clears_quota_flag(self, mock_post):
+        """A successful response should clear the quota_exceeded flag."""
+        t = _make_transport()
+        t._quota_exceeded = True  # Simulate previous 429
+
+        success_response = MagicMock()
+        success_response.status_code = 200
+        mock_post.return_value = success_response
+
+        t._flush_http(["event1"])
+        assert t.quota_exceeded is False  # Cleared by 200
+
+    @patch("httpx.post")
+    def test_429_with_missing_headers(self, mock_post, caplog):
+        """429 without rate limit headers should still handle gracefully."""
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {}  # No rate limit headers
+        mock_response.json.side_effect = Exception("no json")
+        mock_post.return_value = mock_response
+
+        t = _make_transport()
+        with caplog.at_level(logging.ERROR, logger="invokelens_sdk.transport"):
+            t._flush_http(["event1"])
+
+        assert t.quota_exceeded is True
+        assert "quota exceeded" in caplog.text.lower()
+
+
 class TestLogging:
     @patch("time.sleep")
     @patch("httpx.post")

@@ -41,12 +41,29 @@ class EventTransport:
         self.flush_interval = flush_interval_seconds
         self._queue: queue.Queue = queue.Queue(maxsize=max_queue_size)
         self._shutdown = threading.Event()
+        self._quota_exceeded = False
         self._worker = threading.Thread(target=self._run, daemon=True)
         self._worker.start()
         atexit.register(self.shutdown)
 
+    @property
+    def quota_exceeded(self) -> bool:
+        """True if the server returned 429 (monthly quota exceeded).
+
+        Check this after flush to decide whether to warn the user or
+        stop sending events for the remainder of the billing cycle.
+        """
+        return self._quota_exceeded
+
     def send(self, event: TelemetryEvent):
-        """Enqueue event for async delivery. Non-blocking, drops if full."""
+        """Enqueue event for async delivery. Non-blocking, drops if full.
+
+        If quota was previously exceeded, events are silently dropped
+        to avoid flooding the server with requests that will be rejected.
+        """
+        if self._quota_exceeded:
+            return  # Don't queue events we know will be rejected
+
         try:
             self._queue.put_nowait(event.model_dump_json())
         except queue.Full:
@@ -103,7 +120,32 @@ class EventTransport:
                     timeout=10.0,
                 )
                 if response.status_code < 400:
-                    return  # Success
+                    # Success — clear quota flag in case a previous
+                    # month boundary triggered it and usage was reset.
+                    self._quota_exceeded = False
+                    return
+
+                if response.status_code == 429:
+                    # Quota exceeded — surface a clear, actionable message
+                    remaining = response.headers.get("X-RateLimit-Remaining", "0")
+                    limit_hdr = response.headers.get("X-RateLimit-Limit", "unknown")
+                    try:
+                        detail = response.json()
+                        used = detail.get("used", "unknown")
+                        quota = detail.get("limit", limit_hdr)
+                    except Exception:
+                        used = "unknown"
+                        quota = limit_hdr
+                    logger.error(
+                        "InvokeLens monthly event quota exceeded (%s/%s events used). "
+                        "Dropping %d event(s). Upgrade your plan at "
+                        "https://invokelens.com/settings/billing",
+                        used,
+                        quota,
+                        len(batch),
+                    )
+                    self._quota_exceeded = True
+                    return
 
                 if 400 <= response.status_code < 500:
                     # Client error (auth, validation) — do not retry
