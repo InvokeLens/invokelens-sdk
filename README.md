@@ -18,7 +18,7 @@ from invokelens_sdk import InvokeLensClient
 # Initialize the client
 client = InvokeLensClient(
     api_key="your-api-key",
-    endpoint_url="https://your-invokelens-api.com/v1",
+    endpoint_url="https://api.invokelens.com/v1",
 )
 
 # Decorate your Bedrock agent function
@@ -114,9 +114,9 @@ client = InvokeLensClient(
 ## Requirements
 
 - Python 3.11+
-- `boto3` >= 1.28.0
 - `pydantic` >= 2.0
 - `httpx` >= 0.24.0
+- `boto3` >= 1.28.0 *(optional — only for EventBridge transport)*
 
 ## License
 
