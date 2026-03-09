@@ -236,6 +236,9 @@ class ObserveDecorator:
                     except Exception:
                         pass
 
+                # Response summary for content filtering
+                response_summary = self._extract_response_summary(result)
+
                 event = TelemetryEvent(
                     event_type=f"invocation.{'completed' if status == 'SUCCESS' else 'failed'}",
                     api_key=self.api_key,
@@ -257,6 +260,7 @@ class ObserveDecorator:
                     error_type=error_type,
                     tools_called=tool_names,
                     prompt_summary=prompt_summary,
+                    response_summary=response_summary,
                     prompt_fingerprint=prompt_fingerprint,
                     spans=trace.to_dicts(),
                     sdk_version=self.sdk_version,
@@ -413,6 +417,35 @@ class ObserveDecorator:
         try:
             if isinstance(response, dict):
                 return response.get("modelId") or response.get("model_id")
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _extract_response_summary(response) -> Optional[str]:
+        """Best-effort extraction of response text for content filtering.
+
+        Looks for common patterns in Bedrock responses and user return values.
+        Truncates to 500 chars to stay within telemetry size limits.
+        """
+        if response is None:
+            return None
+        try:
+            if isinstance(response, str):
+                return response[:500] if response else None
+            if isinstance(response, dict):
+                # User returned {"output": "..."} pattern (e.g. invoke_agent wrapper)
+                for key in ("output", "response", "text", "result", "body", "content", "message"):
+                    val = response.get(key)
+                    if isinstance(val, str) and val:
+                        return val[:500]
+                # Bedrock InvokeModel response body
+                if "body" in response:
+                    body = response["body"]
+                    if isinstance(body, dict):
+                        text = body.get("completion") or body.get("generation") or body.get("outputText")
+                        if isinstance(text, str):
+                            return text[:500]
         except Exception:
             pass
         return None
