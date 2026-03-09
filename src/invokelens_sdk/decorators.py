@@ -35,6 +35,7 @@ class ObserveDecorator:
         bedrock_agent_alias_id: Optional[str] = None,
         bedrock_region: Optional[str] = None,
         boto3_session=None,
+        session_id: Optional[str] = None,
     ):
         self.transport = transport
         self.agent_id = agent_id
@@ -50,6 +51,7 @@ class ObserveDecorator:
             "AWS_DEFAULT_REGION", "us-east-1"
         )
         self._boto3_session = boto3_session
+        self.session_id = session_id
         self._resolved_model_id: Optional[str] = None
         self._model_resolve_attempted = False
 
@@ -239,6 +241,7 @@ class ObserveDecorator:
                     api_key=self.api_key,
                     agent_id=self.agent_id,
                     agent_name=self.agent_name,
+                    session_id=self.session_id,
                     model_id=model_id,
                     region=self._detect_region(),
                     started_at=started_at.isoformat(),

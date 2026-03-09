@@ -70,6 +70,7 @@ class InvokeLensClient:
         bedrock_agent_alias_id: Optional[str] = None,
         bedrock_region: Optional[str] = None,
         boto3_session=None,
+        session_id: Optional[str] = None,
     ):
         """Decorator that wraps a function and emits telemetry.
 
@@ -90,6 +91,9 @@ class InvokeLensClient:
                 Useful for local development with named profiles. In production
                 (Lambda, ECS, EC2), this is not needed — the SDK uses the
                 default IAM role credentials automatically.
+            session_id: Optional session identifier to group multiple
+                invocations into a logical conversation or workflow.
+                Enables the Sessions tab in the dashboard with replay.
         """
         return ObserveDecorator(
             transport=self._transport,
@@ -103,6 +107,7 @@ class InvokeLensClient:
             bedrock_agent_alias_id=bedrock_agent_alias_id,
             bedrock_region=bedrock_region,
             boto3_session=boto3_session,
+            session_id=session_id,
         )
 
     def trace_tool(self, name: Optional[str] = None, span_type: str = "tool"):

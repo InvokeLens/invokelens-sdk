@@ -478,3 +478,49 @@ def test_unknown_model_logs_warning(caplog):
 
     assert any("model_id is 'unknown'" in msg for msg in caplog.messages)
     assert any("bedrock_agent_id" in msg for msg in caplog.messages)
+
+
+def test_session_id_included_in_event():
+    """session_id is forwarded to the telemetry event."""
+    transport = MagicMock(spec=EventTransport)
+
+    decorator = ObserveDecorator(
+        transport=transport,
+        agent_id="test-agent",
+        model_id="anthropic.claude-3-haiku",
+        api_key="test-key",
+        sdk_version="0.2.1",
+        session_id="sess-abc-123",
+    )
+
+    @decorator
+    def my_function():
+        return "hello"
+
+    my_function()
+
+    transport.send.assert_called_once()
+    event = transport.send.call_args[0][0]
+    assert event.session_id == "sess-abc-123"
+
+
+def test_session_id_none_by_default():
+    """When session_id is not provided, it defaults to None."""
+    transport = MagicMock(spec=EventTransport)
+
+    decorator = ObserveDecorator(
+        transport=transport,
+        agent_id="test-agent",
+        model_id="anthropic.claude-3-haiku",
+        api_key="test-key",
+        sdk_version="0.2.1",
+    )
+
+    @decorator
+    def my_function():
+        return "hello"
+
+    my_function()
+
+    event = transport.send.call_args[0][0]
+    assert event.session_id is None
