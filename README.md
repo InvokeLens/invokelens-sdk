@@ -22,7 +22,11 @@ client = InvokeLensClient(
 )
 
 # Decorate your Bedrock agent function
-@client.observe(agent_id="my-agent", agent_name="Customer Support Bot")
+@client.observe(
+    agent_id="my-agent",
+    agent_name="Customer Support Bot",
+    bedrock_agent_id="ABCDEFGHIJ",  # auto-resolves model ID
+)
 def invoke_agent(prompt: str):
     import boto3
     bedrock = boto3.client("bedrock-agent-runtime")
@@ -64,19 +68,49 @@ The `@client.observe()` decorator automatically captures:
 - **Errors** — exception type and message (truncated to 500 chars)
 - **Tool calls** — names of tools invoked during execution
 
-### Optional Fields
+### Model Detection
 
-You can enrich events with additional context:
+The SDK automatically resolves the model ID using this chain:
+
+1. **Response extraction** — reads `modelId` from the Bedrock response dict (works for `invoke_model`)
+2. **Bedrock GetAgent API** — if you provide `bedrock_agent_id`, the SDK calls `GetAgent` once and caches the model (works for `invoke_agent`)
+3. **Explicit override** — you can always pass `model_id` directly
+4. **Warning** — if none of the above produce a model ID, the SDK logs a warning
+
+**Recommended for `invoke_agent` users** — pass your Bedrock agent ID and the model is resolved automatically:
 
 ```python
 @client.observe(
     agent_id="my-agent",
     agent_name="Customer Support Bot",
-    model_id="anthropic.claude-3-sonnet",  # override auto-detection
+    bedrock_agent_id="ABCDEFGHIJ",   # SDK auto-resolves model via GetAgent
 )
 def invoke_agent(prompt: str):
     ...
 ```
+
+Or set the model explicitly:
+
+```python
+@client.observe(
+    agent_id="my-agent",
+    agent_name="Customer Support Bot",
+    model_id="anthropic.claude-3-sonnet",  # manual override
+)
+def invoke_agent(prompt: str):
+    ...
+```
+
+### `@client.observe()` Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `agent_id` | *(required)* | Unique identifier for the agent in InvokeLens |
+| `agent_name` | `None` | Human-readable name for the agent |
+| `model_id` | auto-detected | Bedrock model ID (e.g. `"anthropic.claude-3-sonnet"`) |
+| `bedrock_agent_id` | `None` | Bedrock agent ID — enables auto model resolution via `GetAgent` |
+| `bedrock_agent_alias_id` | `None` | Bedrock agent alias ID |
+| `bedrock_region` | `AWS_DEFAULT_REGION` | AWS region for the `GetAgent` call |
 
 ## Cost Estimation
 
@@ -116,7 +150,7 @@ client = InvokeLensClient(
 - Python 3.11+
 - `pydantic` >= 2.0
 - `httpx` >= 0.24.0
-- `boto3` >= 1.28.0 *(optional — only for EventBridge transport)*
+- `boto3` >= 1.28.0 *(optional — needed for EventBridge transport and `bedrock_agent_id` auto-resolution)*
 
 ## License
 

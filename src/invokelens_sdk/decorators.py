@@ -31,14 +31,67 @@ class ObserveDecorator:
         api_key: str = "",
         sdk_version: str = "",
         status_checker=None,
+        bedrock_agent_id: Optional[str] = None,
+        bedrock_agent_alias_id: Optional[str] = None,
+        bedrock_region: Optional[str] = None,
+        boto3_session=None,
     ):
         self.transport = transport
         self.agent_id = agent_id
         self.agent_name = agent_name
+        self._explicit_model_id = model_id
         self.model_id = model_id or "unknown"
         self.api_key = api_key
         self.sdk_version = sdk_version
         self.status_checker = status_checker
+        self.bedrock_agent_id = bedrock_agent_id
+        self.bedrock_agent_alias_id = bedrock_agent_alias_id
+        self.bedrock_region = bedrock_region or os.environ.get(
+            "AWS_DEFAULT_REGION", "us-east-1"
+        )
+        self._boto3_session = boto3_session
+        self._resolved_model_id: Optional[str] = None
+        self._model_resolve_attempted = False
+
+    def _resolve_model_from_bedrock(self) -> Optional[str]:
+        """One-time lookup of model ID from Bedrock GetAgent API. Result is cached."""
+        if self._model_resolve_attempted:
+            return self._resolved_model_id
+        self._model_resolve_attempted = True
+
+        if not self.bedrock_agent_id:
+            return None
+
+        try:
+            import boto3
+
+            session = self._boto3_session or boto3.Session()
+            bedrock_client = session.client(
+                "bedrock-agent", region_name=self.bedrock_region
+            )
+            response = bedrock_client.get_agent(agentId=self.bedrock_agent_id)
+            agent = response.get("agent", {})
+            model_id = agent.get("foundationModel")
+            if model_id:
+                self._resolved_model_id = model_id
+                self.model_id = model_id
+                logger.info(
+                    "Auto-resolved model_id=%s from Bedrock agent %s",
+                    model_id,
+                    self.bedrock_agent_id,
+                )
+                return model_id
+        except ImportError:
+            logger.debug(
+                "boto3 not available — cannot auto-resolve model from Bedrock agent"
+            )
+        except Exception:
+            logger.debug(
+                "Failed to resolve model from Bedrock agent %s",
+                self.bedrock_agent_id,
+                exc_info=True,
+            )
+        return None
 
     @staticmethod
     def _extract_prompt_text(
@@ -130,7 +183,27 @@ class ObserveDecorator:
                 duration_ms = int((time.monotonic() - start_time) * 1000)
 
                 input_tokens, output_tokens = self._extract_tokens(result)
-                model_id = self._extract_model_id(result) or self.model_id
+
+                # Model ID resolution chain:
+                # 1. Use explicit model_id if provided at decoration time
+                # 2. Try extracting from response dict
+                # 3. Try auto-resolving from Bedrock GetAgent API
+                # 4. Fall back to "unknown" and warn
+                if self._explicit_model_id:
+                    model_id = self._explicit_model_id
+                else:
+                    model_id = self._extract_model_id(result)
+                    if not model_id and self.bedrock_agent_id:
+                        model_id = self._resolve_model_from_bedrock()
+                    if not model_id:
+                        model_id = self.model_id
+                if model_id == "unknown":
+                    logger.warning(
+                        "model_id is 'unknown' for agent '%s'. "
+                        "Pass model_id or bedrock_agent_id to @client.observe() "
+                        "for accurate model tracking and cost estimation.",
+                        self.agent_id,
+                    )
 
                 # End root span
                 trace.end_span(

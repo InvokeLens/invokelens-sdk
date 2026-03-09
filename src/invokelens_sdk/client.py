@@ -66,13 +66,30 @@ class InvokeLensClient:
         agent_id: str,
         agent_name: Optional[str] = None,
         model_id: Optional[str] = None,
+        bedrock_agent_id: Optional[str] = None,
+        bedrock_agent_alias_id: Optional[str] = None,
+        bedrock_region: Optional[str] = None,
+        boto3_session=None,
     ):
         """Decorator that wraps a function and emits telemetry.
 
         Args:
-            agent_id: Unique identifier for the agent.
+            agent_id: Unique identifier for the agent in InvokeLens.
             agent_name: Human-readable name for the agent.
-            model_id: Bedrock model ID (auto-detected from response if possible).
+            model_id: Bedrock model ID. If omitted, the SDK will try to
+                auto-detect it from the response or resolve it via the
+                Bedrock GetAgent API (requires ``bedrock_agent_id``).
+            bedrock_agent_id: The Bedrock agent ID (e.g. ``"4SRDERSZRC"``).
+                When provided, the SDK calls ``GetAgent`` once to auto-resolve
+                the ``model_id``. Requires ``bedrock-agent:GetAgent`` IAM
+                permission.
+            bedrock_agent_alias_id: Optional Bedrock agent alias ID.
+            bedrock_region: AWS region for the Bedrock GetAgent call.
+                Defaults to ``AWS_DEFAULT_REGION`` or ``us-east-1``.
+            boto3_session: Optional ``boto3.Session`` for the GetAgent call.
+                Useful for local development with named profiles. In production
+                (Lambda, ECS, EC2), this is not needed — the SDK uses the
+                default IAM role credentials automatically.
         """
         return ObserveDecorator(
             transport=self._transport,
@@ -82,6 +99,10 @@ class InvokeLensClient:
             api_key=self.api_key,
             sdk_version=__version__,
             status_checker=self._status_checker,
+            bedrock_agent_id=bedrock_agent_id,
+            bedrock_agent_alias_id=bedrock_agent_alias_id,
+            bedrock_region=bedrock_region,
+            boto3_session=boto3_session,
         )
 
     def trace_tool(self, name: Optional[str] = None, span_type: str = "tool"):

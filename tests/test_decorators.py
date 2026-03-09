@@ -317,3 +317,164 @@ def test_observe_no_prompt_backward_compat():
     event = transport.send.call_args[0][0]
     assert event.prompt_fingerprint is None
     assert event.prompt_summary is None
+
+
+def test_bedrock_agent_id_auto_resolves_model():
+    """bedrock_agent_id triggers GetAgent call to resolve model_id."""
+    transport = MagicMock(spec=EventTransport)
+
+    mock_bedrock_client = MagicMock()
+    mock_bedrock_client.get_agent.return_value = {
+        "agent": {
+            "agentId": "ABCDEFGHIJ",
+            "agentName": "Test Agent",
+            "foundationModel": "amazon.nova-micro-v1:0",
+        }
+    }
+
+    decorator = ObserveDecorator(
+        transport=transport,
+        agent_id="test-agent",
+        agent_name="Test Bot",
+        api_key="test-key",
+        sdk_version="0.1.0",
+        bedrock_agent_id="ABCDEFGHIJ",
+        bedrock_region="us-east-1",
+    )
+
+    mock_session = MagicMock()
+    mock_session.client.return_value = mock_bedrock_client
+
+    with patch("boto3.Session", return_value=mock_session):
+
+        @decorator
+        def my_function():
+            return "Hello from the agent"
+
+        result = my_function()
+
+    assert result == "Hello from the agent"
+    transport.send.assert_called_once()
+
+    event = transport.send.call_args[0][0]
+    assert event.model_id == "amazon.nova-micro-v1:0"
+    mock_bedrock_client.get_agent.assert_called_once_with(agentId="ABCDEFGHIJ")
+
+
+def test_bedrock_agent_id_caches_model():
+    """GetAgent is only called once — second invocation uses cached result."""
+    transport = MagicMock(spec=EventTransport)
+
+    mock_bedrock_client = MagicMock()
+    mock_bedrock_client.get_agent.return_value = {
+        "agent": {"foundationModel": "anthropic.claude-3-haiku"}
+    }
+
+    decorator = ObserveDecorator(
+        transport=transport,
+        agent_id="test-agent",
+        api_key="test-key",
+        sdk_version="0.1.0",
+        bedrock_agent_id="XYZXYZXYZ",
+    )
+
+    mock_session = MagicMock()
+    mock_session.client.return_value = mock_bedrock_client
+
+    with patch("boto3.Session", return_value=mock_session):
+
+        @decorator
+        def my_function():
+            return "ok"
+
+        my_function()
+        my_function()
+
+    # GetAgent should only have been called once
+    mock_bedrock_client.get_agent.assert_called_once()
+    assert transport.send.call_count == 2
+
+    # Both events should have the resolved model
+    for call in transport.send.call_args_list:
+        assert call[0][0].model_id == "anthropic.claude-3-haiku"
+
+
+def test_bedrock_agent_id_fails_open():
+    """If GetAgent fails, invocation proceeds with 'unknown' model."""
+    transport = MagicMock(spec=EventTransport)
+
+    mock_bedrock_client = MagicMock()
+    mock_bedrock_client.get_agent.side_effect = Exception("Access denied")
+
+    decorator = ObserveDecorator(
+        transport=transport,
+        agent_id="test-agent",
+        api_key="test-key",
+        sdk_version="0.1.0",
+        bedrock_agent_id="NOPERM",
+    )
+
+    mock_session = MagicMock()
+    mock_session.client.return_value = mock_bedrock_client
+
+    with patch("boto3.Session", return_value=mock_session):
+
+        @decorator
+        def my_function():
+            return "ok"
+
+        result = my_function()
+
+    assert result == "ok"
+    event = transport.send.call_args[0][0]
+    assert event.model_id == "unknown"
+
+
+def test_explicit_model_id_takes_precedence_over_bedrock_agent_id():
+    """If both model_id and bedrock_agent_id are provided, explicit wins."""
+    transport = MagicMock(spec=EventTransport)
+
+    decorator = ObserveDecorator(
+        transport=transport,
+        agent_id="test-agent",
+        model_id="my-custom-model",
+        api_key="test-key",
+        sdk_version="0.1.0",
+        bedrock_agent_id="ABCDEFGHIJ",
+    )
+
+    @decorator
+    def my_function():
+        return "ok"
+
+    result = my_function()
+
+    assert result == "ok"
+    event = transport.send.call_args[0][0]
+    # Explicit model_id is set, so bedrock_agent_id resolution shouldn't override
+    assert event.model_id == "my-custom-model"
+
+
+def test_unknown_model_logs_warning(caplog):
+    """When model_id falls back to 'unknown', a warning is logged."""
+    import logging
+
+    transport = MagicMock(spec=EventTransport)
+
+    decorator = ObserveDecorator(
+        transport=transport,
+        agent_id="test-agent",
+        api_key="test-key",
+        sdk_version="0.1.0",
+        # No model_id, no bedrock_agent_id
+    )
+
+    @decorator
+    def my_function():
+        return "ok"
+
+    with caplog.at_level(logging.WARNING, logger="invokelens_sdk.decorators"):
+        my_function()
+
+    assert any("model_id is 'unknown'" in msg for msg in caplog.messages)
+    assert any("bedrock_agent_id" in msg for msg in caplog.messages)
